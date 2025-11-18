@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/",
+      "dest": "/api/docs"
+    },
+    {
+      "src": "/docs",
+      "dest": "/api/docs"
+    },
+    {
+      "src": "/user/auth/(.*)",
+      "dest": "/api/user/auth/$1"
+    },
+    {
+      "src": "/listings/(.*)",
+      "dest": "/api/listings/$1"
+    },
+    {
+      "src": "/bookings/(.*)",
+      "dest": "/api/bookings/$1"
+    }
+  ],
+  "env": {
+    "JWT_SECRET": "giraffegiraffebeetroot"
+  },
+  "functions": {
+    "api/**/*.js": {
+      "memory": 1024,
+      "maxDuration": 10
+    }
+  }
+}
