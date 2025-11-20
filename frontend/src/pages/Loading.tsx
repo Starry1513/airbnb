@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Input } from '@/components/ui/input';
 import { ListingCardCheckout } from '@/components/listing/ListingCardCheckout';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DateRange } from '../api/booking';
 import { fetchListingsWithDetails, OneListing } from '../api/listingQueries';
 
@@ -12,14 +13,17 @@ import { fetchListingsWithDetails, OneListing } from '../api/listingQueries';
 const Loading = () => {
   const [searchTerm, setSearchTerm] = useState('');
   // Local filter UI states
-  const [bedroomsL, setBedroomsL] = useState<number | ''>('');
-  const [bathroomsL, setBathroomsL] = useState<number | ''>('');
+  const [bedroomsMin, setBedroomsMin] = useState<number | ''>('');
+  const [bedroomsMax, setBedroomsMax] = useState<number | ''>('');
+  const [bathroomsMin, setBathroomsMin] = useState<number | ''>('');
+  const [bathroomsMax, setBathroomsMax] = useState<number | ''>('');
   const [priceMinL, setPriceMinL] = useState<number | ''>('');
   const [priceMaxL, setPriceMaxL] = useState<number | ''>('');
   const [propertyTypeL, setPropertyTypeL] = useState<string>('');
   const [amenityL, setAmenityL] = useState<string>('');
   const [amenitiesL, setAmenitiesL] = useState<string[]>([]);
   const [dateRange, setDateRange] = useState<DateRange | null>(null);
+  const [titleSort, setTitleSort] = useState<'asc' | 'desc' | ''>('');
 
   const { data: listings, isLoading, isError, error } = useQuery({
     queryKey: ['listings-with-details'],
@@ -34,20 +38,39 @@ const Loading = () => {
   let finalListings = [...publishedListings];
 
   if (searchTerm) {
+    finalListings = finalListings.filter(l => {
+      const searchLower = searchTerm.toLowerCase();
+      const titleMatch = l.title.toLowerCase().includes(searchLower);
+      const cityMatch = l.address?.city?.toLowerCase().includes(searchLower);
+      return titleMatch || cityMatch;
+    });
+  }
+
+  if (bedroomsMin !== '') {
+    finalListings = finalListings.filter(l => {
+      const bedrooms = l.metadata?.bedrooms;
+      const bedroomCount = Array.isArray(bedrooms) ? bedrooms.length : (typeof bedrooms === 'number' ? bedrooms : 0);
+      return bedroomCount >= Number(bedroomsMin);
+    });
+  }
+
+  if (bedroomsMax !== '') {
+    finalListings = finalListings.filter(l => {
+      const bedrooms = l.metadata?.bedrooms;
+      const bedroomCount = Array.isArray(bedrooms) ? bedrooms.length : (typeof bedrooms === 'number' ? bedrooms : 0);
+      return bedroomCount <= Number(bedroomsMax);
+    });
+  }
+
+  if (bathroomsMin !== '') {
     finalListings = finalListings.filter(l =>
-      l.title.toLowerCase().includes(searchTerm.toLowerCase())
+      (l.metadata?.bathrooms ?? 0) >= Number(bathroomsMin)
     );
   }
 
-  if (bedroomsL !== '') {
+  if (bathroomsMax !== '') {
     finalListings = finalListings.filter(l =>
-      (l.metadata?.bedrooms?.length ?? 0) >= Number(bedroomsL)
-    );
-  }
-
-  if (bathroomsL !== '') {
-    finalListings = finalListings.filter(l =>
-      (l.metadata?.bathrooms ?? 0) >= Number(bathroomsL)
+      (l.metadata?.bathrooms ?? 0) <= Number(bathroomsMax)
     );
   }
 
@@ -79,6 +102,13 @@ const Loading = () => {
     finalListings = finalListings.filter(l =>
       l.availability.some(a => a.start >= dateRange.start && a.end <= dateRange.end)
     );
+  }
+
+  // Sort by title if sorting is enabled
+  if (titleSort === 'asc') {
+    finalListings.sort((a, b) => a.title.localeCompare(b.title));
+  } else if (titleSort === 'desc') {
+    finalListings.sort((a, b) => b.title.localeCompare(a.title));
   }
 
   // Legacy filters removed in favor of local UI filters above
@@ -113,7 +143,7 @@ const Loading = () => {
           <CardContent>
             <Input 
               type="text" 
-              placeholder="Search listings by title..." 
+              placeholder="Search listings by title or city..." 
               value={searchTerm} 
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full"
@@ -125,12 +155,25 @@ const Loading = () => {
                 <Input
                   type="number"
                   min={0}
-                  value={bedroomsL}
+                  value={bedroomsMin}
                   onChange={(e) => {
                     const v = e.target.value;
-                    setBedroomsL(v === '' ? '' : Math.max(0, Number(v)));
+                    setBedroomsMin(v === '' ? '' : Math.max(0, Number(v)));
                   }}
                   placeholder="e.g. 2"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Bedrooms (max)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={bedroomsMax}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBedroomsMax(v === '' ? '' : Math.max(0, Number(v)));
+                  }}
+                  placeholder="e.g. 5"
                 />
               </div>
               <div className="space-y-1">
@@ -138,13 +181,39 @@ const Loading = () => {
                 <Input
                   type="number"
                   min={0}
-                  value={bathroomsL}
+                  value={bathroomsMin}
                   onChange={(e) => {
                     const v = e.target.value;
-                    setBathroomsL(v === '' ? '' : Math.max(0, Number(v)));
+                    setBathroomsMin(v === '' ? '' : Math.max(0, Number(v)));
                   }}
                   placeholder="e.g. 1"
                 />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Bathrooms (max)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={bathroomsMax}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBathroomsMax(v === '' ? '' : Math.max(0, Number(v)));
+                  }}
+                  placeholder="e.g. 3"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Sort by Title</label>
+                <Select value={titleSort} onValueChange={(value: 'asc' | 'desc' | '') => setTitleSort(value)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="No sort" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">No sort</SelectItem>
+                    <SelectItem value="asc">Ascending (A-Z)</SelectItem>
+                    <SelectItem value="desc">Descending (Z-A)</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">Price Min</label>
@@ -228,14 +297,17 @@ const Loading = () => {
                   variant="outline"
                   onClick={() => {
                     setSearchTerm('');
-                    setBedroomsL('');
-                    setBathroomsL('');
+                    setBedroomsMin('');
+                    setBedroomsMax('');
+                    setBathroomsMin('');
+                    setBathroomsMax('');
                     setPriceMinL('');
                     setPriceMaxL('');
                     setPropertyTypeL('');
                     setAmenityL('');
                     setAmenitiesL([]);
                     setDateRange(null);
+                    setTitleSort('');
                   }}
                 >
                   Clear filters

@@ -9,13 +9,20 @@ import { MapPin, Bed, Bath, Home, Calendar, DollarSign } from 'lucide-react';
 import { makeNewBooking, AvailabilityRange } from '../api/listing';
 import { leaveReview } from '../api/listing';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { BookingDialog } from '@/components/listing/BookingDialog';
 import { useAuthContext } from '../hooks/useAuthContext';
 import { useAcceptedBooking } from '../hooks/useAcceptedBooking';
+import { getBookingsForListing, Booking } from '../api/booking';
 import { 
   calculateAverageRating, 
   calculateRatingDistribution
 } from '../utils/ratingUtils';
+import {
+  calculateDaysOnline,
+  calculateBookedDaysThisYear,
+  calculateProfitThisYear,
+} from './listingStatus';
 import { RatingDisplay } from '@/components/listing/RatingDisplay';
 import { ReviewList } from '@/components/listing/ReviewList';
 import { PropertyDetails } from '@/components/listing/PropertyDetails';
@@ -49,6 +56,39 @@ export const ListingDetailContent = () => {
     enabled: !!listingId,
   });
 
+  // Get all bookings for current user on this listing
+  const { data: bookingsResponse } = useQuery({
+    queryKey: ['bookings'],
+    queryFn: getBookingsForListing,
+    enabled: isLoggedIn,
+  });
+
+  // Filter bookings for this listing created by current user
+  const userBookings = useMemo(() => {
+    if (!bookingsResponse?.bookings || !isLoggedIn || !userEmail) {
+      return [];
+    }
+    return bookingsResponse.bookings.filter(
+      (booking: Booking) =>
+        booking.listingId.toString() === listingId.toString() &&
+        booking.owner === userEmail
+    );
+  }, [bookingsResponse, isLoggedIn, userEmail, listingId]);
+
+  // Get status badge variant
+  const getStatusVariant = (status: string) => {
+    switch (status.toLowerCase()) {
+    case 'accepted':
+      return 'default';
+    case 'declined':
+      return 'destructive';
+    case 'pending':
+      return 'secondary';
+    default:
+      return 'outline';
+    }
+  };
+
   // Calculate derived data
   const avgRating = useMemo(() => 
     listing ? calculateAverageRating(listing.reviews) : 0, 
@@ -67,19 +107,31 @@ export const ListingDetailContent = () => {
   );
 
 
-  const totalBeds = useMemo(
-    () => {
-      if (!listing) return 0;
-      // Handle both array format and legacy number format for bedrooms
-      if (Array.isArray(listing.metadata.bedrooms)) {
-        return listing.metadata.bedrooms.reduce((sum: number, bedroom: { beds: number }) => sum + bedroom.beds, 0);
-      } else if (typeof listing.metadata.bedrooms === 'number') {
-        return listing.metadata.bedrooms;
-      }
-      return 0;
-    },
-    [listing]
-  );
+  const totalBeds = useMemo(() => {
+    if (!listing?.metadata?.bedrooms) return 0;
+    const bedrooms = listing.metadata.bedrooms;
+    if (Array.isArray(bedrooms)) {
+      return bedrooms.reduce((sum: number, bedroom: { beds: number }) => sum + bedroom.beds, 0);
+    }
+    // Legacy format: bedrooms is a number
+    return typeof bedrooms === 'number' ? bedrooms : 0;
+  }, [listing]);
+
+  // Calculate listing statistics
+  const daysOnline = useMemo(() => {
+    if (!listing?.postedOn) return 0;
+    return calculateDaysOnline(listing.postedOn);
+  }, [listing]);
+
+  const bookedDaysThisYear = useMemo(() => {
+    if (!bookingsResponse?.bookings || !listing) return 0;
+    return calculateBookedDaysThisYear(bookingsResponse.bookings, Number(listing.id));
+  }, [bookingsResponse, listing]);
+
+  const profitThisYear = useMemo(() => {
+    if (!bookingsResponse?.bookings || !listing) return 0;
+    return calculateProfitThisYear(bookingsResponse.bookings, Number(listing.id));
+  }, [bookingsResponse, listing]);
 
   // Mutations
   const leaveReviewMutation = useMutation({
@@ -123,6 +175,7 @@ export const ListingDetailContent = () => {
     onSuccess: async () => {
       queryClient.invalidateQueries({ queryKey: ['listings'] });
       queryClient.invalidateQueries({ queryKey: ['bookings'] });
+      queryClient.invalidateQueries({ queryKey: ['listing', listingId] });
       setBookingDialogOpen(false);
       showResultDialog('success', 'Your booking has been confirmed successfully!');
       // Wait for backend data to update, then trigger notification check
@@ -276,6 +329,57 @@ export const ListingDetailContent = () => {
               onRatingClick={handleRatingClick}
             />
 
+            {/* User Bookings Status */}
+            {isLoggedIn && userBookings.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Calendar className="h-5 w-5" />
+                    Your Bookings
+                  </CardTitle>
+                  <CardDescription>
+                    {userBookings.length === 1 
+                      ? 'Your booking status for this listing'
+                      : `You have ${userBookings.length} bookings for this listing`}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {userBookings.map((booking: Booking) => (
+                      <div key={booking.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 border rounded-lg">
+                        <div className="flex-1 space-y-2">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <Badge variant={getStatusVariant(booking.status)}>
+                              {booking.status}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              Booking ID: {booking.id}
+                            </span>
+                          </div>
+                          <div className="text-sm space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Calendar className="h-4 w-4 text-muted-foreground" />
+                              <span>
+                                {booking.dateRange?.start && !isNaN(new Date(booking.dateRange.start).getTime())
+                                  ? new Date(booking.dateRange.start).toLocaleDateString()
+                                  : 'Invalid date'} - {booking.dateRange?.end && !isNaN(new Date(booking.dateRange.end).getTime())
+                                  ? new Date(booking.dateRange.end).toLocaleDateString()
+                                  : 'Invalid date'}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <DollarSign className="h-4 w-4 text-muted-foreground" />
+                              <span>Total: ${booking.totalPrice}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Availability */}
             {listing.availability.length > 0 && (
               <Card>
@@ -333,8 +437,50 @@ export const ListingDetailContent = () => {
                   <span className="text-lg font-normal text-muted-foreground"> / night</span>
                 </div>
                 <CardDescription>
-                                    Posted on {new Date(listing.postedOn).toLocaleDateString()}
+                                    Posted on {listing.postedOn && !isNaN(new Date(listing.postedOn).getTime())
+                    ? new Date(listing.postedOn).toLocaleDateString()
+                    : 'Unknown date'}
                 </CardDescription>
+              </CardContent>
+            </Card>
+
+            {/* Listing Statistics */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Listing Statistics</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-1">
+                  <div className="text-sm text-muted-foreground">Days Online</div>
+                  <div className="text-2xl font-semibold">{daysOnline}</div>
+                  <CardDescription>
+                    {daysOnline === 0
+                      ? 'Just posted'
+                      : daysOnline === 1
+                        ? '1 day ago'
+                        : `${daysOnline} days ago`}
+                  </CardDescription>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm text-muted-foreground">Booked Days This Year</div>
+                  <div className="text-2xl font-semibold">{bookedDaysThisYear}</div>
+                  <CardDescription>
+                    {bookedDaysThisYear === 0
+                      ? 'No bookings this year'
+                      : bookedDaysThisYear === 1
+                        ? '1 day booked'
+                        : `${bookedDaysThisYear} days booked`}
+                  </CardDescription>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm text-muted-foreground">Profit This Year</div>
+                  <div className="text-2xl font-semibold">${profitThisYear.toLocaleString()}</div>
+                  <CardDescription>
+                    {profitThisYear === 0
+                      ? 'No earnings this year'
+                      : 'From accepted bookings'}
+                  </CardDescription>
+                </div>
               </CardContent>
             </Card>
 

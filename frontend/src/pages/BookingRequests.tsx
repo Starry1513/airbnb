@@ -210,7 +210,11 @@ export const BookingRequests = () => {
                                   <Calendar className="h-4 w-4 text-muted-foreground" />
                                   <span className="font-medium">Dates:</span>
                                   <span>
-                                    {new Date(booking.dateRange.start).toLocaleDateString()} - {new Date(booking.dateRange.end).toLocaleDateString()}
+                                    {booking.dateRange?.start && !isNaN(new Date(booking.dateRange.start).getTime())
+                                      ? new Date(booking.dateRange.start).toLocaleDateString()
+                                      : 'Invalid date'} - {booking.dateRange?.end && !isNaN(new Date(booking.dateRange.end).getTime())
+                                      ? new Date(booking.dateRange.end).toLocaleDateString()
+                                      : 'Invalid date'}
                                   </span>
                                 </div>
 
