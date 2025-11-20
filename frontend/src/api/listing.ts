@@ -54,7 +54,7 @@ export interface Bedroom {
 }
 
 export interface metadata {
-  bedrooms:    Bedroom[];
+  bedrooms:    Bedroom[] | number;  // Support both array and legacy number format
   bathrooms:   number;
   propertyType: string;
   amenities:   string[];

@@ -7,21 +7,41 @@ type AuthHandler = (req: VercelRequest, res: VercelResponse, email: string) => P
 
 export const catchErrors = (fn: Handler): Handler => async (req, res) => {
   try {
-    console.log(`Authorization header is ${req.headers.authorization}`);
-    if (req.method === 'GET') {
-      console.log(`Query params are ${JSON.stringify(req.query)}`);
-    } else {
-      console.log(`Body params are ${JSON.stringify(req.body)}`);
-    }
     await fn(req, res);
-  } catch (err) {
+  } catch (err: any) {
+    // Log full error details for debugging
+    console.error('[catchErrors] Caught error:', {
+      message: err?.message,
+      stack: err?.stack,
+      name: err?.name,
+      type: err?.constructor?.name,
+      isInputError: err instanceof InputError,
+      isAccessError: err instanceof AccessError
+    });
+    
     if (err instanceof InputError) {
       res.status(400).json({ error: err.message });
     } else if (err instanceof AccessError) {
       res.status(403).json({ error: err.message });
     } else {
-      console.log(err);
-      res.status(500).json({ error: 'A system error occurred' });
+      // For database errors, provide more details
+      if (err?.code === 'ECONNREFUSED' || err?.code === 'ETIMEDOUT') {
+        console.error('Database connection error:', err);
+        res.status(500).json({ 
+          error: 'Database connection failed. Please check environment variables.' 
+        });
+      } else if (err?.message?.includes('relation') || err?.message?.includes('does not exist')) {
+        console.error('Database schema error:', err);
+        res.status(500).json({ 
+          error: 'Database schema error. Please run migrations.' 
+        });
+      } else {
+        res.status(500).json({ 
+          error: 'A system error occurred',
+          // In development, include error message
+          ...(process.env.NODE_ENV !== 'production' && { details: err?.message })
+        });
+      }
     }
   }
 };

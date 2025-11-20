@@ -7,7 +7,14 @@ interface ListingInfoProps {
 }
 
 export function ListingInfo({ listing, ifDateRange = false }: ListingInfoProps) {
-  const totalBeds = listing.metadata?.bedrooms?.reduce((sum, room) => sum + room.beds, 0) || 0;
+  // Handle both array format and legacy number format for bedrooms
+  const totalBeds = listing.metadata?.bedrooms
+    ? Array.isArray(listing.metadata.bedrooms)
+      ? listing.metadata.bedrooms.reduce((sum, room) => sum + room.beds, 0)
+      : typeof listing.metadata.bedrooms === 'number'
+      ? listing.metadata.bedrooms
+      : 0
+    : 0;
   const avgRating = listing.reviews && listing.reviews.length > 0
     ? listing.reviews.reduce((sum, r) => sum + r.score, 0) / listing.reviews.length
     : 0;

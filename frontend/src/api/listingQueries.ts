@@ -38,7 +38,9 @@ export const fetchListingsWithDetails = async (): Promise<(OneListing)[]> => {
     throw new Error('Failed to fetch listings');
   }
 
-  if (listings.length === 0) throw new Error('No listings found');
+  // Return empty array if no listings, don't throw error
+  if (listings.length === 0) return [];
+
   return await Promise.all(
     listings.map(async (listing) => {
       return await fetchListingDetail(listing.id);

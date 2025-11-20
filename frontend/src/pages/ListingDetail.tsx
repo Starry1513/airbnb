@@ -68,8 +68,16 @@ export const ListingDetailContent = () => {
 
 
   const totalBeds = useMemo(
-    () =>
-      listing ? listing.metadata.bedrooms.reduce((sum: number, bedroom: { beds: number }) => sum + bedroom.beds, 0) : 0,
+    () => {
+      if (!listing) return 0;
+      // Handle both array format and legacy number format for bedrooms
+      if (Array.isArray(listing.metadata.bedrooms)) {
+        return listing.metadata.bedrooms.reduce((sum: number, bedroom: { beds: number }) => sum + bedroom.beds, 0);
+      } else if (typeof listing.metadata.bedrooms === 'number') {
+        return listing.metadata.bedrooms;
+      }
+      return 0;
+    },
     [listing]
   );
 

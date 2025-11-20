@@ -1,6 +1,13 @@
 import backendConfig from '../../backend.config.json';
 
-export const API_BASE_URL = `http://localhost:${backendConfig.BACKEND_PORT}`;
+
+const apiBaseEnv = import.meta.env?.VITE_API_BASE;
+export const API_BASE_URL = apiBaseEnv ?? `http://localhost:${backendConfig.BACKEND_PORT}`;
+
+// Debug: log API base URL on load
+console.log('[API Config] API_BASE_URL:', API_BASE_URL);
+console.log('[API Config] VITE_API_BASE env:', import.meta.env?.VITE_API_BASE);
+
 interface ApiCallOptions extends RequestInit {
   headers?: Record<string, string>;
 }

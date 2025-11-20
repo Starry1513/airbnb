@@ -1,33 +1,22 @@
 import jwt from 'jsonwebtoken';
-import AsyncLock from 'async-lock';
 import { InputError, AccessError } from './error';
-import { getDataStore, saveDataStore } from './datastore';
-import { Listing, Booking, Review, DateRange } from './types';
+import * as db from './datastore';
+import { DateRange, Review } from './types';
 
-const lock = new AsyncLock();
-
-const JWT_SECRET = process.env.JWT_SECRET || 'giraffegiraffebeetroot';
+// Support both standard and prefixed (starry_) variable names
+// Note: starry_SUPABASE_JWT_SECRET is for Supabase, not for app JWT tokens
+const JWT_SECRET = process.env.JWT_SECRET || process.env['starry_JWT_SECRET'] || 'giraffegiraffebeetroot';
 
 /***************************************************************
                        State Management
 ***************************************************************/
 
+// Note: resourceLock is not needed with Postgres as connection pooling handles concurrency
+// Kept for API compatibility with memory-based version
 export const resourceLock = <T>(callback: (resolve: (value: T) => void, reject: (reason: any) => void) => void): Promise<T> =>
   new Promise((resolve, reject) => {
-    lock.acquire('resourceLock', callback(resolve, reject));
+    callback(resolve, reject);
   });
-
-const randNum = (max: number): number => Math.round(Math.random() * (max - Math.floor(max / 10)) + Math.floor(max / 10));
-const generateId = (currentList: string[], max = 999999999): string => {
-  let R = randNum(max);
-  while (currentList.includes(R.toString())) {
-    R = randNum(max);
-  }
-  return R.toString();
-};
-
-const newListingId = (listings: Record<string, Listing>): string => generateId(Object.keys(listings));
-const newBookingId = (bookings: Record<string, Booking>): string => generateId(Object.keys(bookings));
 
 /***************************************************************
                        Auth Functions
@@ -40,363 +29,311 @@ export const getEmailFromAuthorization = (authorization: string | undefined): st
     }
     const token = authorization.replace('Bearer ', '');
     const decoded = jwt.verify(token, JWT_SECRET) as { email: string };
-    const { email } = decoded;
-    const { users } = getDataStore();
-    if (!(email in users)) {
-      throw new AccessError('Invalid Token');
-    }
-    return email;
+    return decoded.email;
   } catch {
     throw new AccessError('Invalid Token');
   }
 };
 
-export const login = (email: string, password: string): Promise<string> =>
-  resourceLock<string>((resolve, reject) => {
-    const { users } = getDataStore();
-    if (!email) {
-      return reject(new InputError('Must provide an email for user login'));
-    } else if (!password) {
-      return reject(new InputError('Must provide a password for user login'));
-    } else if (email && email in users) {
-      if (users[email].password === password) {
-        users[email].sessionActive = true;
-        saveDataStore({ users });
-        resolve(jwt.sign({ email }, JWT_SECRET, { algorithm: 'HS256' }));
-      }
-    }
-    return reject(new InputError('Invalid email or password'));
+export const login = async (email: string, password: string): Promise<string> => {
+  if (!email) {
+    throw new InputError('Must provide an email for user login');
+  }
+  if (!password) {
+    throw new InputError('Must provide a password for user login');
+  }
+
+  const user = await db.getUser(email);
+  if (!user) {
+    throw new InputError('Invalid email or password');
+  }
+
+  if (user.password === password) {
+    await db.updateUser(email, { sessionActive: true });
+    return jwt.sign({ email }, JWT_SECRET, { algorithm: 'HS256' });
+  }
+
+  throw new InputError('Invalid email or password');
+};
+
+export const logout = async (email: string): Promise<void> => {
+  await db.updateUser(email, { sessionActive: false });
+};
+
+export const register = async (email: string, password: string, name: string): Promise<string> => {
+  if (!email) {
+    throw new InputError('Must provide an email for user registration');
+  }
+  if (!password) {
+    throw new InputError('Must provide a password for user registration');
+  }
+  if (!name) {
+    throw new InputError('Must provide a name for user registration');
+  }
+
+  const exists = await db.userExists(email);
+  if (exists) {
+    throw new InputError('Email address already registered');
+  }
+
+  await db.createUser(email, {
+    name,
+    password,
+    sessionActive: true,
   });
 
-export const logout = (email: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { users } = getDataStore();
-    users[email].sessionActive = false;
-    saveDataStore({ users });
-    resolve();
-  });
-
-export const register = (email: string, password: string, name: string): Promise<string> =>
-  resourceLock<string>((resolve, reject) => {
-    const { users } = getDataStore();
-    if (!email) {
-      return reject(new InputError('Must provide an email for user registration'));
-    } else if (!password) {
-      return reject(new InputError('Must provide a password for user registration'));
-    } else if (!name) {
-      return reject(new InputError('Must provide a name for user registration'));
-    } else if (email && email in users) {
-      return reject(new InputError('Email address already registered'));
-    } else {
-      users[email] = {
-        name,
-        password,
-        sessionActive: true,
-      };
-      saveDataStore({ users });
-      const token = jwt.sign({ email }, JWT_SECRET, { algorithm: 'HS256' });
-      resolve(token);
-    }
-  });
+  return jwt.sign({ email }, JWT_SECRET, { algorithm: 'HS256' });
+};
 
 /***************************************************************
                        Listing Functions
 ***************************************************************/
 
-const newListingPayload = (
-  title: string,
-  owner: string,
-  address: object,
-  price: number,
-  thumbnail: string,
-  metadata: object
-): Listing => ({
-  title,
-  owner,
-  address,
-  price,
-  thumbnail,
-  metadata,
-  reviews: [],
-  availability: [],
-  published: false,
-  postedOn: null,
-});
+export const assertOwnsListing = async (email: string, listingId: string): Promise<void> => {
+  const owner = await db.getListingOwner(listingId);
+  if (!owner) {
+    throw new InputError('Invalid listing ID');
+  }
+  if (owner !== email) {
+    throw new InputError('User does not own this Listing');
+  }
+};
 
-export const assertOwnsListing = (email: string, listingId: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings } = getDataStore();
-    if (!(listingId in listings)) {
-      return reject(new InputError('Invalid listing ID'));
-    } else if (listings[listingId].owner !== email) {
-      return reject(new InputError('User does not own this Listing'));
-    } else {
-      resolve();
-    }
-  });
+export const assertOwnsBooking = async (email: string, bookingId: string): Promise<void> => {
+  const owner = await db.getBookingOwner(bookingId);
+  if (!owner) {
+    throw new InputError('Invalid booking ID');
+  }
+  if (owner !== email) {
+    throw new InputError('User does not own this booking');
+  }
+};
 
-export const assertOwnsBooking = (email: string, bookingId: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { bookings } = getDataStore();
-    if (!(bookingId in bookings)) {
-      return reject(new InputError('Invalid booking ID'));
-    } else if (bookings[bookingId].owner !== email) {
-      return reject(new InputError('User does not own this booking'));
-    } else {
-      resolve();
-    }
-  });
-
-export const addListing = (
+export const addListing = async (
   title: string,
   email: string,
   address: object,
   price: number,
   thumbnail: string,
   metadata: object
-): Promise<string> =>
-  resourceLock<string>((resolve, reject) => {
-    const { listings } = getDataStore();
-    if (title === undefined) {
-      return reject(new InputError('Must provide a title for new listing'));
-    } else if (Object.keys(listings).find((key) => listings[key].title === title) !== undefined) {
-      return reject(new InputError('A listing with this title already exists'));
-    } else if (address === undefined) {
-      return reject(new InputError('Must provide an address for new listing'));
-    } else if (price === undefined || isNaN(price)) {
-      return reject(new InputError('Must provide a valid price for new listing'));
-    } else if (thumbnail === undefined) {
-      return reject(new InputError('Must provide a thumbnail for new listing'));
-    } else if (metadata === undefined) {
-      return reject(new InputError('Must provide property details for this listing'));
-    } else {
-      const id = newListingId(listings);
-      listings[id] = newListingPayload(title, email, address, price, thumbnail, metadata);
-      saveDataStore({ listings });
-      resolve(id);
-    }
-  });
+): Promise<string> => {
+  if (title === undefined) {
+    throw new InputError('Must provide a title for new listing');
+  }
 
-export const getListingDetails = (listingId: string): Promise<Listing> =>
-  resourceLock<Listing>((resolve, reject) => {
-    const { listings } = getDataStore();
-    resolve({
-      ...listings[listingId],
-    });
-  });
+  const existingId = await db.getListingByTitle(title);
+  if (existingId) {
+    throw new InputError('A listing with this title already exists');
+  }
 
-export const getAllListings = (): Promise<any[]> =>
-  resourceLock<any[]>((resolve, reject) => {
-    const { listings } = getDataStore();
-    resolve(
-      Object.keys(listings).map((key) => ({
-        id: parseInt(key, 10),
-        title: listings[key].title,
-        owner: listings[key].owner,
-        address: listings[key].address,
-        thumbnail: listings[key].thumbnail,
-        price: listings[key].price,
-        reviews: listings[key].reviews,
-      })),
-    );
-  });
+  if (address === undefined) {
+    throw new InputError('Must provide an address for new listing');
+  }
+  if (price === undefined || isNaN(price)) {
+    throw new InputError('Must provide a valid price for new listing');
+  }
+  if (thumbnail === undefined) {
+    throw new InputError('Must provide a thumbnail for new listing');
+  }
+  if (metadata === undefined) {
+    throw new InputError('Must provide property details for this listing');
+  }
 
-export const updateListing = (
+  return await db.createListing({
+    title,
+    owner: email,
+    address,
+    price,
+    thumbnail,
+    metadata,
+  });
+};
+
+export const getListingDetails = async (listingId: string): Promise<any> => {
+  const listing = await db.getListing(listingId);
+  if (!listing) {
+    throw new InputError('Invalid listing ID');
+  }
+  return listing;
+};
+
+export const getAllListings = async (): Promise<any[]> => {
+  return await db.getAllListings();
+};
+
+export const updateListing = async (
   listingId: string,
   title?: string,
   address?: object,
   thumbnail?: string,
   price?: number,
   metadata?: object
-): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings } = getDataStore();
-    if (address) {
-      listings[listingId].address = address;
-    }
-    if (title) {
-      listings[listingId].title = title;
-    }
-    if (thumbnail) {
-      listings[listingId].thumbnail = thumbnail;
-    }
-    if (price) {
-      listings[listingId].price = price;
-    }
-    if (metadata) {
-      listings[listingId].metadata = metadata;
-    }
-    saveDataStore({ listings });
-    resolve();
-  });
+): Promise<void> => {
+  const updates: any = {};
+  if (address) updates.address = address;
+  if (title) updates.title = title;
+  if (thumbnail) updates.thumbnail = thumbnail;
+  if (price) updates.price = price;
+  if (metadata) updates.metadata = metadata;
 
-export const removeListing = (listingId: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings } = getDataStore();
-    delete listings[listingId];
-    saveDataStore({ listings });
-    resolve();
-  });
+  await db.updateListing(listingId, updates);
+};
 
-export const publishListing = (listingId: string, availability: DateRange[]): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings } = getDataStore();
-    if (availability === undefined) {
-      return reject(new InputError('Must provide listing availability'));
-    } else if (listings[listingId].published === true) {
-      return reject(new InputError('This listing is already published'));
-    } else {
-      listings[listingId].availability = availability;
-      listings[listingId].published = true;
-      listings[listingId].postedOn = new Date().toISOString();
-      saveDataStore({ listings });
-      resolve();
-    }
-  });
+export const removeListing = async (listingId: string): Promise<void> => {
+  await db.deleteListing(listingId);
+};
 
-export const unpublishListing = (listingId: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings } = getDataStore();
-    if (listings[listingId].published === false) {
-      return reject(new InputError('This listing is already unpublished'));
-    } else {
-      listings[listingId].availability = [];
-      listings[listingId].published = false;
-      listings[listingId].postedOn = null;
-      saveDataStore({ listings });
-      resolve();
-    }
-  });
+export const publishListing = async (listingId: string, availability: DateRange[]): Promise<void> => {
+  if (availability === undefined) {
+    throw new InputError('Must provide listing availability');
+  }
 
-export const leaveListingReview = (
+  const listing = await db.getListing(listingId);
+  if (!listing) {
+    throw new InputError('Invalid listing ID');
+  }
+
+  if (listing.published === true) {
+    throw new InputError('This listing is already published');
+  }
+
+  await db.updateListing(listingId, {
+    availability,
+    published: true,
+    postedOn: new Date().toISOString(),
+  });
+};
+
+export const unpublishListing = async (listingId: string): Promise<void> => {
+  const listing = await db.getListing(listingId);
+  if (!listing) {
+    throw new InputError('Invalid listing ID');
+  }
+
+  if (listing.published === false) {
+    throw new InputError('This listing is already unpublished');
+  }
+
+  await db.updateListing(listingId, {
+    availability: [],
+    published: false,
+    postedOn: null,
+  });
+};
+
+export const leaveListingReview = async (
   email: string,
   listingId: string,
   bookingId: string,
   review: Review
-): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings, bookings } = getDataStore();
-    if (!(bookingId in bookings)) {
-      return reject(new InputError('Invalid booking ID'));
-    } else if (!(listingId in listings)) {
-      return reject(new InputError('Invalid listing ID'));
-    } else if (bookings[bookingId].owner !== email) {
-      return reject(new InputError('User has not stayed at this listing'));
-    } else if (bookings[bookingId].listingId !== listingId) {
-      return reject(new InputError('This booking is not associated with this listing ID'));
-    } else if (review === undefined) {
-      return reject(new InputError('Must provide review contents'));
-    } else {
-      listings[listingId].reviews.push(review);
-      saveDataStore({ listings });
-      resolve();
-    }
-  });
+): Promise<void> => {
+  const booking = await db.getBooking(bookingId);
+  if (!booking) {
+    throw new InputError('Invalid booking ID');
+  }
+
+  const listing = await db.getListing(listingId);
+  if (!listing) {
+    throw new InputError('Invalid listing ID');
+  }
+
+  if (booking.owner !== email) {
+    throw new InputError('User has not stayed at this listing');
+  }
+
+  if (booking.listingId !== listingId) {
+    throw new InputError('This booking is not associated with this listing ID');
+  }
+
+  if (review === undefined) {
+    throw new InputError('Must provide review contents');
+  }
+
+  await db.addReview(listingId, email, bookingId, review);
+};
 
 /***************************************************************
                        Booking Functions
 ***************************************************************/
 
-const newBookingPayload = (
+export const makeNewBooking = async (
   owner: string,
   dateRange: DateRange,
   totalPrice: number,
   listingId: string
-): Booking => ({
-  owner,
-  dateRange,
-  totalPrice,
-  listingId,
-  status: 'pending',
-});
+): Promise<string> => {
+  const listing = await db.getListing(listingId);
+  if (!listing) {
+    throw new InputError('Invalid listing ID');
+  }
 
-export const makeNewBooking = (
-  owner: string,
-  dateRange: DateRange,
-  totalPrice: number,
-  listingId: string
-): Promise<string> =>
-  resourceLock<string>((resolve, reject) => {
-    const { listings, bookings } = getDataStore();
-    if (!(listingId in listings)) {
-      return reject(new InputError('Invalid listing ID'));
-    } else if (dateRange === undefined) {
-      return reject(new InputError('Must provide a valid date range for the booking'));
-    } else if (totalPrice === undefined || totalPrice < 0 || isNaN(totalPrice)) {
-      return reject(new InputError('Must provide a valid total price for this booking'));
-    } else if (listings[listingId].owner === owner) {
-      return reject(new InputError('Cannot make bookings for your own listings'));
-    } else if (listings[listingId].published === false) {
-      return reject(new InputError('Cannot make a booking for an unpublished listing'));
-    } else {
-      const id = newBookingId(bookings);
-      bookings[id] = newBookingPayload(owner, dateRange, totalPrice, listingId);
-      saveDataStore({ bookings });
-      resolve(id);
-    }
-  });
+  if (dateRange === undefined) {
+    throw new InputError('Must provide a valid date range for the booking');
+  }
+  if (totalPrice === undefined || totalPrice < 0 || isNaN(totalPrice)) {
+    throw new InputError('Must provide a valid total price for this booking');
+  }
+  if (listing.owner === owner) {
+    throw new InputError('Cannot make bookings for your own listings');
+  }
+  if (listing.published === false) {
+    throw new InputError('Cannot make a booking for an unpublished listing');
+  }
 
-export const getAllBookings = (): Promise<any[]> =>
-  resourceLock<any[]>((resolve, reject) => {
-    const { bookings } = getDataStore();
-    resolve(
-      Object.keys(bookings).map((key) => ({
-        id: parseInt(key, 10),
-        owner: bookings[key].owner,
-        dateRange: bookings[key].dateRange,
-        totalPrice: bookings[key].totalPrice,
-        listingId: bookings[key].listingId,
-        status: bookings[key].status,
-      })),
-    );
+  return await db.createBooking({
+    owner,
+    dateRange,
+    totalPrice,
+    listingId,
   });
+};
 
-export const removeBooking = (bookingId: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { bookings } = getDataStore();
-    delete bookings[bookingId];
-    saveDataStore({ bookings });
-    resolve();
-  });
+export const getAllBookings = async (): Promise<any[]> => {
+  return await db.getAllBookings();
+};
 
-export const acceptBooking = (owner: string, bookingId: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings, bookings } = getDataStore();
-    if (!(bookingId in bookings)) {
-      return reject(new InputError('Invalid booking ID'));
-    } else if (
-      Object.keys(listings).find((key) => key === bookings[bookingId].listingId && listings[key].owner === owner) ===
-      undefined
-    ) {
-      return reject(new InputError("Cannot accept bookings for a listing that isn't yours"));
-    } else if (bookings[bookingId].status === 'accepted') {
-      return reject(new InputError('Booking has already been accepted'));
-    } else if (bookings[bookingId].status === 'declined') {
-      return reject(new InputError('Booking has already been declined'));
-    } else {
-      bookings[bookingId].status = 'accepted';
-      saveDataStore({ bookings });
-      resolve();
-    }
-  });
+export const removeBooking = async (bookingId: string): Promise<void> => {
+  await db.deleteBooking(bookingId);
+};
 
-export const declineBooking = (owner: string, bookingId: string): Promise<void> =>
-  resourceLock<void>((resolve, reject) => {
-    const { listings, bookings } = getDataStore();
-    if (!(bookingId in bookings)) {
-      return reject(new InputError('Invalid booking ID'));
-    } else if (
-      Object.keys(listings).find((key) => key === bookings[bookingId].listingId && listings[key].owner === owner) ===
-      undefined
-    ) {
-      return reject(new InputError("Cannot accept bookings for a listing that isn't yours"));
-    } else if (bookings[bookingId].status === 'declined') {
-      return reject(new InputError('Booking has already been declined'));
-    } else if (bookings[bookingId].status === 'accepted') {
-      return reject(new InputError('Booking has already been accepted'));
-    } else {
-      bookings[bookingId].status = 'declined';
-      saveDataStore({ bookings });
-      resolve();
-    }
-  });
+export const acceptBooking = async (owner: string, bookingId: string): Promise<void> => {
+  const booking = await db.getBooking(bookingId);
+  if (!booking) {
+    throw new InputError('Invalid booking ID');
+  }
+
+  const listingOwner = await db.getListingOwner(booking.listingId);
+  if (listingOwner !== owner) {
+    throw new InputError("Cannot accept bookings for a listing that isn't yours");
+  }
+
+  if (booking.status === 'accepted') {
+    throw new InputError('Booking has already been accepted');
+  }
+  if (booking.status === 'declined') {
+    throw new InputError('Booking has already been declined');
+  }
+
+  await db.updateBooking(bookingId, { status: 'accepted' });
+};
+
+export const declineBooking = async (owner: string, bookingId: string): Promise<void> => {
+  const booking = await db.getBooking(bookingId);
+  if (!booking) {
+    throw new InputError('Invalid booking ID');
+  }
+
+  const listingOwner = await db.getListingOwner(booking.listingId);
+  if (listingOwner !== owner) {
+    throw new InputError("Cannot decline bookings for a listing that isn't yours");
+  }
+
+  if (booking.status === 'declined') {
+    throw new InputError('Booking has already been declined');
+  }
+  if (booking.status === 'accepted') {
+    throw new InputError('Booking has already been accepted');
+  }
+
+  await db.updateBooking(bookingId, { status: 'declined' });
+};
