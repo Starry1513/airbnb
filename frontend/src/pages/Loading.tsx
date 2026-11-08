@@ -204,12 +204,15 @@ const Loading = () => {
               </div>
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">Sort by Title</label>
-                <Select value={titleSort} onValueChange={(value: 'asc' | 'desc' | '') => setTitleSort(value)}>
+                <Select
+                  value={titleSort || 'none'}
+                  onValueChange={(value: 'asc' | 'desc' | 'none') => setTitleSort(value === 'none' ? '' : value)}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="No sort" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">No sort</SelectItem>
+                    <SelectItem value="none">No sort</SelectItem>
                     <SelectItem value="asc">Ascending (A-Z)</SelectItem>
                     <SelectItem value="desc">Descending (Z-A)</SelectItem>
                   </SelectContent>
